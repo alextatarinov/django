@@ -1684,7 +1684,7 @@ class Query(BaseExpression):
 
         if on_clause:
             # We are going to change the on_clause, so make a copy
-            on_clause = on_clause.clone()
+            on_clause = copy.deepcopy(on_clause)
             resolve_all(on_clause)
 
         join_type = subquery.join_type or LOUTER
