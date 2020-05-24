@@ -1015,11 +1015,14 @@ class Query(BaseExpression):
             alias = seen[int_model] = join_info.joins[-1]
         return alias or seen[None]
 
-    def add_annotation(self, annotation, alias, is_summary=False):
+    def add_annotation(self, annotation, alias, is_summary=False, select=True):
         """Add a single annotation expression to the Query."""
         annotation = annotation.resolve_expression(self, allow_joins=True, reuse=None,
                                                    summarize=is_summary)
-        self.append_annotation_mask([alias])
+        if select:
+            self.append_annotation_mask([alias])
+        elif self.annotation_select_mask is None:
+            self.set_annotation_mask(())
         self.annotations[alias] = annotation
 
     def resolve_expression(self, query, *args, **kwargs):
@@ -1705,6 +1708,8 @@ class Query(BaseExpression):
                 # which is executed as a wrapped subquery if any of the
                 # aggregate() elements reference an existing annotation. In
                 # that case we need to return a Ref to the subquery's annotation.
+                if name not in self.annotation_select:
+                    raise FieldError('Cannot aggregate over the alias. Use annotate() to promote the alias')
                 return Ref(name, self.annotation_select[name])
             else:
                 return annotation

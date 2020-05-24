@@ -268,6 +268,51 @@ control the name of the annotation::
 For an in-depth discussion of aggregation, see :doc:`the topic guide on
 Aggregation </topics/db/aggregation>`.
 
+``alias()``
+~~~~~~~~~~~~~~
+
+.. method:: alias(*args, **kwargs)
+
+.. versionadded:: 3.2
+
+Same as :meth:`~django.db.models.query.QuerySet.annotate()`, but instead of
+annotating objects in the ``QuerySet``, saves the expression for later reuse with
+other ``QuerySet`` methods. This is useful when the result of the expression
+itself is not needed, but is used for filtering, ordering or as a part of
+a complex expression. By not selecting the actual value, one can construct
+smaller SQL query, return less data from the database and avoid double evaluation
+of costly expressions, which results in better performance.
+
+For example, if you were manipulating a list of blogs, you may want
+to find blogs with more than 5 entries, but not actually interested
+in the exact number of entries::
+
+    >>> from django.db.models import Count
+    >>> blogs = Blog.objects.alias(entries=Count('entry')).filter(entries__gt=5)
+
+Despite the value not being selected, all other effects of using ``alias()`` are
+the same as of ``annotate()``.
+
+``alias()`` can be used in conjunction with
+:meth:`~django.db.models.query.QuerySet.annotate()`,
+:meth:`~django.db.models.query.QuerySet.filter()`,
+:meth:`~django.db.models.query.QuerySet.order_by()`
+and :meth:`~django.db.models.query.QuerySet.update()`.
+To use aliased expression with other methods, one must promote alias to annotation:
+
+    >>> from django.db.models import Count, F
+    >>> blogs = Blog.objects.alias(entries=Count('entry')).annotate(entries=F('entries'))
+
+:meth:`~django.db.models.query.QuerySet.filter()` and
+:meth:`~django.db.models.query.QuerySet.order_by()`
+can take expressions directly, but expression construction and usage often does
+not happen in the same place (for example, ``QuerySet``
+method creates expression, to be later used by the view).
+Also ``alias()`` allows you to build complex expressions incrementally,
+possibly spanning multiple methods and modules, refer to the expression parts
+by their aliases and only use
+:meth:`~django.db.models.query.QuerySet.annotate()` for the final result.
+
 ``order_by()``
 ~~~~~~~~~~~~~~
 

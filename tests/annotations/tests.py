@@ -8,7 +8,7 @@ from django.db.models import (
     Value,
 )
 from django.db.models.expressions import RawSQL
-from django.db.models.functions import Length, Lower
+from django.db.models.functions import Coalesce, Length, Lower
 from django.test import TestCase, skipUnlessDBFeature
 
 from .models import (
@@ -118,14 +118,59 @@ class NonAggregateAnnotationTestCase(TestCase):
         for book in books:
             self.assertEqual(book.is_book, 1)
 
+    def test_basic_alias(self):
+        books = Book.objects.alias(
+            is_book=Value(1, output_field=IntegerField())
+        )
+        self.assertNotIn('is_book', str(books.query))
+
+    def test_basic_alias_annotation(self):
+        books = Book.objects.alias(
+            is_book_alias=Value(1, output_field=IntegerField())
+        ).annotate(is_book=F('is_book_alias'))
+        self.assertNotIn('is_book_alias', str(books.query))
+        for book in books:
+            self.assertEqual(book.is_book, 1)
+
+    def test_same_alias_annotation(self):
+        books = Book.objects.alias(
+            is_book=Value(1, output_field=IntegerField())
+        ).annotate(is_book=F('is_book'))
+        for book in books:
+            self.assertEqual(book.is_book, 1)
+
+    def test_alias_annotation_expression(self):
+        books = Book.objects.alias(
+            is_book_alias=Value(1, output_field=IntegerField())
+        ).annotate(is_book=Coalesce('is_book_alias', 0))
+        self.assertNotIn('is_book_alias', str(books.query))
+        for book in books:
+            self.assertEqual(book.is_book, 1)
+
     def test_basic_f_annotation(self):
         books = Book.objects.annotate(another_rating=F('rating'))
+        for book in books:
+            self.assertEqual(book.another_rating, book.rating)
+
+    def test_basic_alias_f_annotation(self):
+        books = Book.objects.alias(
+            another_rating_alias=F('rating')
+        ).annotate(another_rating=F('another_rating_alias'))
+        self.assertNotIn('another_rating_alias', str(books.query))
         for book in books:
             self.assertEqual(book.another_rating, book.rating)
 
     def test_joined_annotation(self):
         books = Book.objects.select_related('publisher').annotate(
             num_awards=F('publisher__num_awards'))
+        for book in books:
+            self.assertEqual(book.num_awards, book.publisher.num_awards)
+
+    def test_joined_alias_annotation(self):
+        books = Book.objects.select_related('publisher').alias(
+            num_awards_alias=F('publisher__num_awards')
+        ).annotate(num_awards=F('num_awards_alias'))
+        self.assertNotIn('num_awards_alias', str(books.query))
         for book in books:
             self.assertEqual(book.num_awards, book.publisher.num_awards)
 
@@ -168,10 +213,33 @@ class NonAggregateAnnotationTestCase(TestCase):
             self.assertEqual(book.is_book, 1)
             self.assertEqual(book.rating_count, 1)
 
+    def test_alias_annotate_with_aggregation(self):
+        books = Book.objects.alias(
+            is_book_alias=Value(1, output_field=IntegerField()),
+            rating_count_alias=Count('rating')
+        ).annotate(
+            is_book=F('is_book_alias'),
+            rating_count=F('rating_count_alias')
+        )
+        self.assertNotIn('is_book_alias', str(books.query))
+        self.assertNotIn('rating_count_alias', str(books.query))
+        for book in books:
+            self.assertEqual(book.is_book, 1)
+            self.assertEqual(book.rating_count, 1)
+
     def test_aggregate_over_annotation(self):
         agg = Author.objects.annotate(other_age=F('age')).aggregate(otherage_sum=Sum('other_age'))
         other_agg = Author.objects.aggregate(age_sum=Sum('age'))
         self.assertEqual(agg['otherage_sum'], other_agg['age_sum'])
+
+    def test_aggregate_over_alias(self):
+        with self.assertRaisesMessage(
+            FieldError,
+            'Cannot aggregate over the alias. Use annotate() to promote the alias'
+        ):
+            agg = Author.objects.alias(
+                other_age=F('age')
+            ).aggregate(otherage_sum=Sum('other_age'))
 
     @skipUnlessDBFeature('can_distinct_on_fields')
     def test_distinct_on_with_annotation(self):
@@ -212,6 +280,11 @@ class NonAggregateAnnotationTestCase(TestCase):
         ).distinct('name_len').values_list('name_len', flat=True)
         self.assertCountEqual(lengths, [3, 7, 8])
 
+    @skipUnlessDBFeature('can_distinct_on_fields')
+    def test_distinct_on_with_alias(self):
+        with self.assertRaisesMessage(FieldError, "Cannot resolve keyword 'other_rating' into field."):
+            book = Book.objects.alias(other_rating=F('rating') - 1).distinct('other_rating').first()
+
     def test_filter_annotation(self):
         books = Book.objects.annotate(
             is_book=Value(1, output_field=IntegerField())
@@ -226,6 +299,14 @@ class NonAggregateAnnotationTestCase(TestCase):
         for book in books:
             self.assertEqual(book.other_rating, 3.5)
 
+    def test_filter_alias_with_f(self):
+        books = Book.objects.alias(
+            other_rating=F('rating')
+        ).filter(other_rating=3.5)
+        self.assertNotIn('other_rating', str(books.query))
+        for book in books:
+            self.assertEqual(book.rating, 3.5)
+
     def test_filter_annotation_with_double_f(self):
         books = Book.objects.annotate(
             other_rating=F('rating')
@@ -233,12 +314,26 @@ class NonAggregateAnnotationTestCase(TestCase):
         for book in books:
             self.assertEqual(book.other_rating, book.rating)
 
+    def test_filter_alias_with_double_f(self):
+        books = Book.objects.alias(
+            other_rating=F('rating')
+        ).filter(other_rating=F('rating'))
+        self.assertNotIn('other_rating', str(books.query))
+        self.assertEqual(books.count(), Book.objects.count())
+
     def test_filter_agg_with_double_f(self):
         books = Book.objects.annotate(
             sum_rating=Sum('rating')
         ).filter(sum_rating=F('sum_rating'))
         for book in books:
             self.assertEqual(book.sum_rating, book.rating)
+
+    def test_filter_alias_agg_with_double_f(self):
+        books = Book.objects.alias(
+            sum_rating=Sum('rating')
+        ).filter(sum_rating=F('sum_rating'))
+        self.assertNotIn('sum_rating', str(books.query))
+        self.assertEqual(books.count(), Book.objects.count())
 
     def test_filter_wrong_annotation(self):
         with self.assertRaisesMessage(FieldError, "Cannot resolve keyword 'nope' into field."):
@@ -275,6 +370,12 @@ class NonAggregateAnnotationTestCase(TestCase):
     def test_update_with_annotation(self):
         book_preupdate = Book.objects.get(pk=self.b2.pk)
         Book.objects.annotate(other_rating=F('rating') - 1).update(rating=F('other_rating'))
+        book_postupdate = Book.objects.get(pk=self.b2.pk)
+        self.assertEqual(book_preupdate.rating - 1, book_postupdate.rating)
+
+    def test_update_with_alias(self):
+        book_preupdate = Book.objects.get(pk=self.b2.pk)
+        Book.objects.alias(other_rating=F('rating') - 1).update(rating=F('other_rating'))
         book_postupdate = Book.objects.get(pk=self.b2.pk)
         self.assertEqual(book_preupdate.rating - 1, book_postupdate.rating)
 
@@ -317,6 +418,10 @@ class NonAggregateAnnotationTestCase(TestCase):
         book = qs.annotate(other_isbn=F('isbn')).get(other_rating=4)
         self.assertEqual(book['other_rating'], 4)
         self.assertEqual(book['other_isbn'], '155860191')
+
+    def test_values_alias(self):
+        with self.assertRaisesMessage(FieldError, "Cannot resolve keyword 'other_rating' into field."):
+            qs = Book.objects.alias(other_rating=F('rating') - 1).values('other_rating')
 
     def test_values_with_pk_annotation(self):
         # annotate references a field in values() with pk
@@ -397,6 +502,16 @@ class NonAggregateAnnotationTestCase(TestCase):
             lambda a: a.other_age
         )
 
+    def test_order_by_alias(self):
+        authors = Author.objects.alias(other_age=F('age')).order_by('other_age')
+        self.assertNotIn('other_age', str(authors.query))
+        self.assertQuerysetEqual(
+            authors, [
+                25, 29, 29, 34, 35, 37, 45, 46, 57,
+            ],
+            lambda a: a.age
+        )
+
     def test_order_by_aggregate(self):
         authors = Author.objects.values('age').annotate(age_count=Count('age')).order_by('age_count', 'age')
         self.assertQuerysetEqual(
@@ -404,6 +519,16 @@ class NonAggregateAnnotationTestCase(TestCase):
                 (25, 1), (34, 1), (35, 1), (37, 1), (45, 1), (46, 1), (57, 1), (29, 2),
             ],
             lambda a: (a['age'], a['age_count'])
+        )
+
+    def test_order_by_alias_aggregate(self):
+        authors = Author.objects.values('age').alias(age_count=Count('age')).order_by('age_count', 'age')
+        self.assertNotIn('age_count', str(authors.query))
+        self.assertQuerysetEqual(
+            authors, [
+                (25,), (34,), (35,), (37,), (45,), (46,), (57,), (29,),
+            ],
+            lambda a: (a['age'],)
         )
 
     def test_raw_sql_with_inherited_field(self):
@@ -631,4 +756,14 @@ class NonAggregateAnnotationTestCase(TestCase):
             datetime.date(2008, 3, 3),
             datetime.date(2008, 6, 23),
             datetime.date(2008, 11, 3),
+        ])
+
+    def test_alias_datetimes(self):
+        qs = Store.objects.alias(
+            original_opening_alias=F('original_opening'),
+        ).datetimes('original_opening_alias', 'year')
+        self.assertCountEqual(qs, [
+            datetime.datetime(1945, 1, 1),
+            datetime.datetime(1994, 1, 1),
+            datetime.datetime(2001, 1, 1),
         ])

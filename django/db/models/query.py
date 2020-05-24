@@ -1080,6 +1080,12 @@ class QuerySet:
         return clone
 
     def annotate(self, *args, **kwargs):
+        return self._annotate(args, kwargs, select=True)
+
+    def alias(self, *args, **kwargs):
+        return self._annotate(args, kwargs, select=False)
+
+    def _annotate(self, args, kwargs, select=True):
         """
         Return a query set in which the returned objects have been annotated
         with extra data or aggregations.
@@ -1118,7 +1124,7 @@ class QuerySet:
                     raise ValueError("The join '%s' conflicts with the alias for existing join." % alias)
                 clone.query.add_subquery_join(annotation, alias)
             else:
-                clone.query.add_annotation(annotation, alias, is_summary=False)
+                clone.query.add_annotation(annotation, alias, is_summary=False, select=select)
 
         for alias, annotation in clone.query.annotations.items():
             if alias in annotations and annotation.contains_aggregate:
